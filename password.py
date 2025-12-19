@@ -1,221 +1,115 @@
-#!/usr/bin/env python3
-import re
-import secrets
-import string
-
-# ---------- Utilities ----------
+import re, secrets, string
 
 def is_sequential(password):
-    sequences = "abcdefghijklmnopqrstuvwxyz0123456789"
+    S = "abcdefghijklmnopqrstuvwxyz0123456789"
     p = password.lower()
-    for i in range(len(sequences) - 2):
-        seq = sequences[i:i+3]
-        if seq in p:
-            return True
-    return False
-
-def has_triple_repeat(s):
-    return bool(re.search(r"(.)\1\1", s))
+    return any(S[i:i+3] in p for i in range(len(S)-2))
 
 def generate_strong_password(length=16):
-    if length < 12:
-        length = 12
-    alphabet = string.ascii_letters + string.digits + "!@#$%^&*()-_=+{}[]<>?/|"
+    chars = string.ascii_letters + string.digits + "!@#$%^&*()-_=+{}[]<>?/|"
     while True:
-        pwd = "".join(secrets.choice(alphabet) for _ in range(length))
-        # must include categories
-        checks = [
-            re.search(r"[A-Z]", pwd),
-            re.search(r"[a-z]", pwd),
-            re.search(r"[0-9]", pwd),
-            re.search(r"[!@#$%^&*()\-\_=+\[\]\{\}<>?/|]", pwd),
-        ]
-        if all(checks) and not is_sequential(pwd) and not has_triple_repeat(pwd):
+        pwd = "".join(secrets.choice(chars) for _ in range(length))
+        if (re.search(r"[A-Z]", pwd) and re.search(r"[a-z]", pwd) and
+            re.search(r"[0-9]", pwd) and re.search(r"[!@#$%^&*()\-\_=+\[\]\{\}<>?/|]", pwd) and
+            not is_sequential(pwd) and not re.search(r"(.)\1\1", pwd)):
             return pwd
 
-# ---------- Username-related checks ----------
-
 def normalize(s):
-    return re.sub(r'\W+', '', s).lower()  # remove non-alphanumeric, lowercase
+    return re.sub(r'\W+', '', s).lower()
 
-def username_similarity_issues(password, username):
-    """
-    Return a list of issues (strings). Empty list => no username-related issues.
-    """
+def username_issues(password, username):
     issues = []
-    u_norm = normalize(username)
-    p_norm = normalize(password)
+    u = normalize(username)
+    p = normalize(password)
+    if not u:
+        return issues
 
-    if not u_norm:
-        return issues  # nothing to compare
+    if u in p:
+        issues.append("Password contains username")
+    if u[::-1] in p:
+        issues.append("Password contains username reversed")
 
-    # 1) username present in password
-    if u_norm and u_norm in p_norm:
-        issues.append("Password contains the username (or exact characters from it).")
+    subs = [u[i:i+3] for i in range(len(u)-2)]
+    sub_hits = [s for s in subs if s in p]
+    if sub_hits:
+        issues.append("Contains username parts: " + ",".join(sub_hits))
 
-    # 2) reversed username present
-    if u_norm and u_norm[::-1] in p_norm:
-        issues.append("Password contains the username reversed.")
+    # simple leet substitutions
+    lmap = { '@':'a','4':'a','0':'o','1':'l','!':'i','$':'s','3':'e' }
+    temp = p
+    for k,v in lmap.items():
+        temp = temp.replace(k, v)
+    if u in temp:
+        issues.append("Looks like username after substitutions")
 
-    # 3) any substring of username length >=3 present in password
-    min_sub = 3
-    found_sub = []
-    for i in range(len(u_norm) - (min_sub - 1)):
-        sub = u_norm[i:i+min_sub]
-        if sub in p_norm:
-            found_sub.append(sub)
-    if found_sub:
-        issues.append(f"Password contains substring(s) of username: {', '.join(sorted(set(found_sub)))}")
+    # prefix/suffix similarity
+    pref = sum(a==b for a,b in zip(u, p))
+    suf = sum(a==b for a,b in zip(u[::-1], p[::-1]))
 
-    # 4) simple character-substitution check (e.g., 'a'->'@', 'o'->'0')
-    # We'll map common leet-char and see if replacing them in password reveals the username
-    leet_map = str.maketrans("@4", "aa")  # very basic; can be expanded
-    # A slightly more thorough approach:
-    subs = { '@': 'a', '4': 'a', '0': 'o', '1': 'l', '!': 'i', '$': 's', '3': 'e' }
-    p_mapped = p_norm
-    for k, v in subs.items():
-        p_mapped = p_mapped.replace(k, v)
-    if u_norm and u_norm in p_mapped:
-        issues.append("After common character substitutions, password still contains the username.")
-
-    # 5) too-similar check: long common prefix or suffix
-    # common prefix
-    pref_len = 0
-    for a, b in zip(u_norm, p_norm):
-        if a == b:
-            pref_len += 1
-        else:
-            break
-    if pref_len >= 4:
-        issues.append(f"Password shares a long prefix ({pref_len} chars) with username.")
-
-    # common suffix
-    suf_len = 0
-    for a, b in zip(u_norm[::-1], p_norm[::-1]):
-        if a == b:
-            suf_len += 1
-        else:
-            break
-    if suf_len >= 4:
-        issues.append(f"Password shares a long suffix ({suf_len} chars) with username.")
+    if pref >= 4:
+        issues.append(f"Shares {pref}-char prefix with username")
+    if suf >= 4:
+        issues.append(f"Shares {suf}-char suffix with username")
 
     return issues
 
-# ---------- Strength analyzer (same logic as before, but returns numeric score too) ----------
-
 def check_password_strength(password):
     score = 0
-    report = []
+    rpt = []
 
-    # Length scoring
     L = len(password)
-    if L >= 16:
-        score += 3
-        report.append("✔ Excellent length (16+)")
-    elif L >= 12:
-        score += 2
-        report.append("✔ Good length (12+)")
-    elif L >= 8:
-        score += 1
-        report.append("✔ Minimum length passed (8+)")
-    else:
-        report.append("❌ Password too short")
+    if L >= 16: score += 3; rpt.append("✔ length ≥ 16")
+    elif L >= 12: score += 2; rpt.append("✔ length ≥ 12")
+    elif L >= 8: score += 1; rpt.append("✔ length ≥ 8")
+    else: rpt.append("❌ too short")
 
-    # Uppercase
-    if re.search(r"[A-Z]", password):
-        score += 1
-        report.append("✔ Contains uppercase letters")
-    else:
-        report.append("❌ Missing uppercase letters")
+    # char checks
+    if re.search(r"[A-Z]", password): score += 1; rpt.append("✔ uppercase")
+    else: rpt.append("❌ no uppercase")
 
-    # Lowercase
-    if re.search(r"[a-z]", password):
-        score += 1
-        report.append("✔ Contains lowercase letters")
-    else:
-        report.append("❌ Missing lowercase letters")
+    if re.search(r"[a-z]", password): score += 1; rpt.append("✔ lowercase")
+    else: rpt.append("❌ no lowercase")
 
-    # Digit
-    if re.search(r"[0-9]", password):
-        score += 1
-        report.append("✔ Contains digits")
-    else:
-        report.append("❌ Missing digits")
+    if re.search(r"[0-9]", password): score += 1; rpt.append("✔ digit")
+    else: rpt.append("❌ no digit")
 
-    # Special characters
-    if re.search(r"[!@#$%^&*(),.?\":{}|<>/_\-=\[\]{}+\\|]", password):
-        score += 1
-        report.append("✔ Contains special characters")
-    else:
-        report.append("❌ Missing special characters")
+    if re.search(r"[!@#$%^&*()\-\_=+\[\]\{\}<>?/|]", password): score += 1; rpt.append("✔ special char")
+    else: rpt.append("❌ no special char")
 
-    # Repeated chars
-    if re.search(r"(.)\1\1", password):
-        score -= 1
-        report.append("❌ Contains repeating characters (aaa, 111 etc.)")
-
-    # Sequential chars
-    if is_sequential(password):
-        score -= 1
-        report.append("❌ Contains sequential patterns (abc, 123 etc.)")
-
-    # Weak patterns
-    weak_patterns = ["password", "123456", "qwerty", "letmein"]
-    if any(w in password.lower() for w in weak_patterns):
+    if re.search(r"(.)\1\1", password): score -= 1; rpt.append("❌ triple repeated chars")
+    if is_sequential(password): score -= 1; rpt.append("❌ sequential pattern")
+    if any(w in password.lower() for w in ("password","123456","qwerty","letmein")):#
         score -= 2
-        report.append("❌ Contains common weak patterns")
+        rpt.append("❌ common weak word")
 
-    # Final rating
-    if score >= 7:
-        rating = "🟢 Strong Password"
-    elif score >= 4:
-        rating = "🟡 Medium Password"
-    else:
-        rating = "🔴 Weak Password"
+    rating = "🟢 Strong" if score >= 7 else ("🟡 Medium" if score >= 4 else "🔴 Weak")
 
-    return rating, score, report
+    return rating, score, rpt
 
-# ---------- CLI flow ----------
+# -------- MAIN FUNCTION (call this manually) -------- #
 
-def main():
-    print("=== Username-aware Password Checker ===")
+def run_checker():
     username = input("Enter username: ").strip()
-    if not username:
-        print("Username should not be empty. Exiting.")
-        return
+    password = input("Enter password: ").strip()
 
-    pwd = input("Enter password to check: ").strip()
-    if not pwd:
-        print("Password should not be empty. Exiting.")
-        return
-
-    rating, score, details = check_password_strength(pwd)
-    uname_issues = username_similarity_issues(pwd, username)
+    rating, score, details = check_password_strength(password)
+    u_issues = username_issues(password, username)
 
     print("\nPassword Strength:", rating)
     print("Details:")
-    for d in details:
-        print("-", d)
+    for x in details:
+        print("-", x)
 
-    if uname_issues:
-        print("\nUsername-related issues found:")
-        for u in uname_issues:
-            print("-", u)
-    else:
-        print("\nNo username-related issues detected.")
+    if u_issues:
+        print("\nUsername Issues:")
+        for x in u_issues:
+            print("-", x)
 
-    # Suggest a strong password unless rating is already Strong
-    suggestion = None
+    # Suggest password if Weak or Medium
     if not rating.startswith("🟢"):
-        suggestion = generate_strong_password()
-        print("\n🔧 Suggested Strong Password:")
-        print(suggestion)
+        print("\nSuggested Strong Password:", generate_strong_password())
     else:
-        print("\nNo suggestion needed — password is strong.")
+        print("\nYour password is strong!")
 
-    # Extra: brief summary/warning if username issues present even when strong
-    if rating.startswith("🟢") and uname_issues:
-        print("\n⚠ Note: Although overall strength is strong, password is related to the username — consider changing it to avoid targeted guessing.")
-
-if __name__ == "__main__":
-    main()
+# Just call run_checker() manually
+run_checker()
